@@ -251,4 +251,15 @@ with tab3:
         fig = px.scatter_mapbox(
             df_mapa, lat="Latitude", lon="Longitude", color="Situação", size="Volume (%)",
             color_discrete_map={"Normal": "blue", "Atenção": "orange", "Crítico": "red"},
-            zoom
+            zoom=3.5, mapbox_style="open-street-map", hover_name="Nome", height=650
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Carregando mapa...")
+
+st.markdown("---")
+with st.expander("ℹ️ Fontes e Notas Técnicas"):
+    st.write("""
+    **Fonte de Dados:** Agência Nacional de Águas e Saneamento Básico (ANA) - API SAR-B.
+    A lista completa pode falhar ocasionalmente devido à instabilidade do servidor da ANA.
+    """)
