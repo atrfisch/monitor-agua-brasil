@@ -29,29 +29,63 @@ RESERVATORIOS_ESTRATEGICOS = [
     {"nome": "Descoberto (DF)", "id": "12458", "lat": -15.80, "lon": -48.17, "estado": "DF"},
 ]
 
-# --- 2. FUNÇÕES DE BACKEND ---
+# --- 2. MAPEAMENTO MANUAL ---
+MAPEAMENTO_CIDADES = {
+    "sao paulo": "Sistema Cantareira (SP)",
+    "rio de janeiro": "Furnas (MG)",
+    "brasília": "Descoberto (DF)",
+    "brasilia": "Descoberto (DF)",
+    "recife": "Itaparica (Luiz Gonzaga) (PE)", 
+    "fortaleza": "Castanhão (CE)",
+    "natal": "Armando Ribeiro Gonçalves (RN)",
+    "campina grande": "Epitácio Pessoa (Boqueirão) (PB)",
+    "curitiba": "Itaipu (PR)",
+}
 
-@st.cache_data(ttl=86400) # Cache de 24h pois a lista de reservatórios muda pouco
+# --- FUNÇÕES DE BACKEND OTIMIZADAS ---
+
+@st.cache_data(ttl=86400)
 def carregar_catalogo_completo():
-    """Baixa a lista de TODOS os reservatórios cadastrados na ANA"""
+    """Baixa a lista de TODOS os reservatórios cadastrados na ANA (sem fallback)"""
     url = "http://sarws.ana.gov.br/SarService.asmx/ObterReservatorios"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    }
+    
+    lista = []
+    
     try:
-        response = requests.get(url, timeout=15)
+        response = requests.get(url, timeout=30, headers=headers)
+        response.raise_for_status()
+        
         root = ET.fromstring(response.content)
-        lista = []
+        
         for res in root.findall("./Reservatorio"):
-            nome = res.find("NomeReservatorio").text
-            codigo = res.find("Codigo").text
-            municipio = res.find("Municipio").text
-            estado = res.find("Estado").text
+            try:
+                nome = res.find("NomeReservatorio").text
+                codigo = res.find("Codigo").text
+                municipio = res.find("Municipio").text
+                estado = res.find("Estado").text
+                
+                if nome and codigo:
+                    muni_str = municipio if municipio else "N/A"
+                    est_str = estado if estado else "BR"
+                    label = f"{nome} - {muni_str}/{est_str}"
+                    lista.append({"label": label, "id": codigo, "nome": nome, "uf": est_str})
+            except:
+                continue
+                
+        if len(lista) > 0:
+            return pd.DataFrame(lista).sort_values("label")
             
-            # Cria um rótulo bonito para busca
-            label = f"{nome} - {municipio}/{estado}"
-            lista.append({"label": label, "id": codigo, "nome": nome, "uf": estado})
-            
-        return pd.DataFrame(lista).sort_values("label")
-    except:
+    except Exception as e:
+        # Se a API falhar, imprime o erro no log para debug e retorna vazio
+        print(f"ERRO AO BAIXAR CATÁLOGO ANA (sem fallback): {e}")
         return pd.DataFrame()
+
+    return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def pegar_nivel_ana(codigo_ana):
@@ -80,16 +114,6 @@ def pegar_nivel_ana(codigo_ana):
         return None
     return None
 
-def buscar_cidade(nome_cidade):
-    geolocator = Nominatim(user_agent="app_monitor_brasil_v5")
-    try:
-        location = geolocator.geocode(f"{nome_cidade}, Brazil")
-        if location:
-            return location.latitude, location.longitude, location.address
-    except:
-        return None, None, None
-    return None, None, None
-
 def encontrar_proximo_estrategico(lat_cidade, lon_cidade):
     menor_distancia = float('inf')
     reservatorio_perto = None
@@ -100,6 +124,16 @@ def encontrar_proximo_estrategico(lat_cidade, lon_cidade):
             reservatorio_perto = res
     return reservatorio_perto, menor_distancia
 
+def buscar_cidade(nome_cidade):
+    geolocator = Nominatim(user_agent="app_monitor_brasil_v5")
+    try:
+        location = geolocator.geocode(f"{nome_cidade}, Brazil")
+        if location:
+            return location.latitude, location.longitude, location.address
+    except:
+        return None, None, None
+    return None, None, None
+
 @st.cache_data(ttl=3600)
 def carregar_dados_mapa_estrategico():
     hoje = datetime.now()
@@ -109,7 +143,6 @@ def carregar_dados_mapa_estrategico():
     dados = []
     headers = {"User-Agent": "Mozilla/5.0"}
     
-    # Barra de loading silenciosa
     for res in RESERVATORIOS_ESTRATEGICOS:
         try:
             full_url = f"{url_base}?boletim=sin&reservatorio={res['id']}&dataInicial={inicio.strftime('%d/%m/%Y')}&dataFinal={hoje.strftime('%d/%m/%Y')}"
@@ -164,16 +197,15 @@ with tab1:
             else:
                 st.error("Cidade não encontrada.")
 
-# --- ABA 2: Lista Completa (O QUE VOCÊ PEDIU) ---
+# --- ABA 2: Lista Completa (Busca Avançada) ---
 with tab2:
     st.markdown("### Banco de Dados Completo da ANA")
     st.markdown("Pesquise manualmente qualquer reservatório cadastrado no sistema federal.")
     
-    with st.spinner("Baixando catálogo da ANA (pode levar alguns segundos na primeira vez)..."):
+    with st.spinner("Baixando catálogo da ANA (pode levar alguns segundos)..."):
         df_catalogo = carregar_catalogo_completo()
     
     if not df_catalogo.empty:
-        # Selectbox com Search
         opcao = st.selectbox(
             "Selecione o Reservatório:", 
             df_catalogo["label"].unique(),
@@ -182,7 +214,6 @@ with tab2:
         )
         
         if opcao:
-            # Pega o ID baseado na escolha
             item = df_catalogo[df_catalogo["label"] == opcao].iloc[0]
             st.divider()
             st.subheader(f"📊 {item['nome']} ({item['uf']})")
@@ -192,11 +223,10 @@ with tab2:
                 
             if dados_reais:
                 col_a, col_b = st.columns(2)
-                col_a.metric("Volume Útil", f"{dados_reais['volume']:.2f}%")
+                nivel = dados_reais['volume']
+                col_a.metric("Volume Útil", f"{nivel:.2f}%")
                 col_a.caption(f"Última medição: {dados_reais['data']}")
                 
-                # Visualização da caixa
-                nivel = dados_reais['volume']
                 cor = "#e74c3c" if nivel < 20 else "#f1c40f" if nivel < 40 else "#3498db"
                 col_b.markdown(f"""
                 <div style="width:100%; background-color:#ddd; border-radius:10px; height:30px;">
@@ -211,7 +241,7 @@ with tab2:
             else:
                 st.warning("⚠️ Este reservatório consta no cadastro, mas a ANA não retornou dados de telemetria no último ano.")
     else:
-        st.error("Erro ao baixar catálogo da ANA.")
+        st.error("Erro ao baixar catálogo da ANA. Tente novamente mais tarde.")
 
 # --- ABA 3: Mapa Visual ---
 with tab3:
@@ -221,8 +251,4 @@ with tab3:
         fig = px.scatter_mapbox(
             df_mapa, lat="Latitude", lon="Longitude", color="Situação", size="Volume (%)",
             color_discrete_map={"Normal": "blue", "Atenção": "orange", "Crítico": "red"},
-            zoom=3, mapbox_style="open-street-map", hover_name="Nome", height=500
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Carregando mapa...")
+            zoom
