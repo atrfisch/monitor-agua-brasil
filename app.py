@@ -42,50 +42,47 @@ MAPEAMENTO_CIDADES = {
 
 # --- FUNÇÕES DE BACKEND ---
 
+# --- SUBSTIRUA A FUNÇÃO pegar_nivel_ana POR ESTA ---
+
 @st.cache_data(ttl=3600)
 def pegar_nivel_ana(codigo_ana):
     """Consulta a API da ANA para um reservatório específico"""
     hoje = datetime.now()
-    inicio = hoje - timedelta(days=5)
+    
+    # CORREÇÃO 1: Aumentamos a busca para 45 dias atrás
+    # Motivo: Muitos reservatórios ficam semanas sem atualizar no sistema oficial
+    inicio = hoje - timedelta(days=45)
+    
     url = f"http://sarws.ana.gov.br/SarService.asmx/DadosHistoricos?boletim=sin&reservatorio={codigo_ana}&dataInicial={inicio.strftime('%d/%m/%Y')}&dataFinal={hoje.strftime('%d/%m/%Y')}"
     
     try:
-        response = requests.get(url, timeout=3)
+        # CORREÇÃO 2: Fingimos ser um navegador para evitar bloqueios
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        response = requests.get(url, timeout=10, headers=headers)
+        
+        # Parse do XML
         root = ET.fromstring(response.content)
         registros = root.findall("./Reservatorio")
-        if registros:
-            return float(registros[-1].find("VolumePercentual").text.replace(",", "."))
-    except:
-        return None
-    return None
-
-def encontrar_reservatorio_proximo(lat_cidade, lon_cidade):
-    """Calcula a distância geodésica e retorna o reservatório mais perto"""
-    menor_distancia = float('inf')
-    reservatorio_perto = None
-    
-    for res in RESERVATORIOS:
-        coords_res = (res['lat'], res['lon'])
-        coords_cidade = (lat_cidade, lon_cidade)
-        dist = geodesic(coords_cidade, coords_res).km
         
-        if dist < menor_distancia:
-            menor_distancia = dist
-            reservatorio_perto = res
-            
-    return reservatorio_perto, menor_distancia
-
-def buscar_cidade(nome_cidade):
-    """Usa Nominatim (OpenStreetMap) para achar lat/lon da cidade"""
-    geolocator = Nominatim(user_agent="app_caixa_dagua_brasil")
-    try:
-        # Adiciona 'Brazil' para evitar cidades homônimas no exterior
-        location = geolocator.geocode(f"{nome_cidade}, Brazil")
-        if location:
-            return location.latitude, location.longitude, location.address
-    except:
-        return None, None, None
-    return None, None, None
+        # CORREÇÃO 3: Busca reversa inteligente
+        # Em vez de pegar só o último, varremos do mais recente para o mais antigo
+        # até achar um que tenha o campo "VolumePercentual" preenchido.
+        if registros:
+            for registro in reversed(registros):
+                try:
+                    texto_volume = registro.find("VolumePercentual").text
+                    if texto_volume: # Se não for vazio
+                        return float(texto_volume.replace(",", "."))
+                except:
+                    continue # Tenta o dia anterior
+                    
+    except Exception as e:
+        print(f"Erro de conexão ou parse: {e}")
+        return None
+        
+    return None
 
 # --- INTERFACE VISUAL ---
 
